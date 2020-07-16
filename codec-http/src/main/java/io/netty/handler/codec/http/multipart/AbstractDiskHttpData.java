@@ -124,8 +124,8 @@ public abstract class AbstractDiskHttpData extends AbstractHttpData {
                 return;
             }
             RandomAccessFile accessFile = new RandomAccessFile(file, "rw");
-            accessFile.setLength(0);
             try {
+                accessFile.setLength(0);
                 FileChannel localfileChannel = accessFile.getChannel();
                 ByteBuffer byteBuffer = buffer.nioBuffer();
                 int written = 0;
@@ -156,7 +156,6 @@ public abstract class AbstractDiskHttpData extends AbstractHttpData {
                     throw new IOException("Out of size: " + (size + localsize) +
                             " > " + definedSize);
                 }
-                ByteBuffer byteBuffer = buffer.nioBufferCount() == 1 ? buffer.nioBuffer() : buffer.copy().nioBuffer();
                 int written = 0;
                 if (file == null) {
                     file = tempFile();
@@ -165,9 +164,7 @@ public abstract class AbstractDiskHttpData extends AbstractHttpData {
                     RandomAccessFile accessFile = new RandomAccessFile(file, "rw");
                     fileChannel = accessFile.getChannel();
                 }
-                while (written < localsize) {
-                    written += fileChannel.write(byteBuffer);
-                }
+                buffer.getBytes(buffer.readerIndex(), fileChannel, fileChannel.position(), localsize);
                 size += localsize;
                 buffer.readerIndex(buffer.readerIndex() + written);
             } finally {
@@ -184,8 +181,11 @@ public abstract class AbstractDiskHttpData extends AbstractHttpData {
                 RandomAccessFile accessFile = new RandomAccessFile(file, "rw");
                 fileChannel = accessFile.getChannel();
             }
-            fileChannel.force(false);
-            fileChannel.close();
+            try {
+                fileChannel.force(false);
+            } finally {
+                fileChannel.close();
+            }
             fileChannel = null;
             setCompleted();
         } else {
@@ -195,12 +195,13 @@ public abstract class AbstractDiskHttpData extends AbstractHttpData {
 
     @Override
     public void setContent(File file) throws IOException {
+        long size = file.length();
+        checkSize(size);
+        this.size = size;
         if (this.file != null) {
             delete();
         }
         this.file = file;
-        size = file.length();
-        checkSize(size);
         isRenamed = true;
         setCompleted();
     }
@@ -213,9 +214,9 @@ public abstract class AbstractDiskHttpData extends AbstractHttpData {
         }
         file = tempFile();
         RandomAccessFile accessFile = new RandomAccessFile(file, "rw");
-        accessFile.setLength(0);
         int written = 0;
         try {
+            accessFile.setLength(0);
             FileChannel localfileChannel = accessFile.getChannel();
             byte[] bytes = new byte[4096 * 4];
             ByteBuffer byteBuffer = ByteBuffer.wrap(bytes);
@@ -247,9 +248,14 @@ public abstract class AbstractDiskHttpData extends AbstractHttpData {
         if (fileChannel != null) {
             try {
                 fileChannel.force(false);
-                fileChannel.close();
             } catch (IOException e) {
-                logger.warn("Failed to close a file.", e);
+                logger.warn("Failed to force.", e);
+            } finally {
+                try {
+                    fileChannel.close();
+                } catch (IOException e) {
+                    logger.warn("Failed to close a file.", e);
+                }
             }
             fileChannel = null;
         }
@@ -291,15 +297,17 @@ public abstract class AbstractDiskHttpData extends AbstractHttpData {
         }
         int read = 0;
         ByteBuffer byteBuffer = ByteBuffer.allocate(length);
-        while (read < length) {
-            int readnow = fileChannel.read(byteBuffer);
-            if (readnow == -1) {
-                fileChannel.close();
-                fileChannel = null;
-                break;
-            } else {
+        try {
+            while (read < length) {
+                int readnow = fileChannel.read(byteBuffer);
+                if (readnow == -1) {
+                    break;
+                }
                 read += readnow;
             }
+        } finally {
+            fileChannel.close();
+            fileChannel = null;
         }
         if (read == 0) {
             return EMPTY_BUFFER;
